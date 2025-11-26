@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual env
+.venv/
+
+# Data (mos e ngarko ECSSD në GitHub)
+data/ECSSD/
+
+# Output directories
+checkpoints/
+outputs/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Misc
+*.log
