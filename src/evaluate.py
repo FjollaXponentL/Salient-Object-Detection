@@ -1,157 +1,161 @@
 # src/evaluate.py
+
 import os
-import csv
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import torch.nn.functional as F
-from tqdm import tqdm
+
 from data_loader import create_dataloaders
 from sod_model import SOD_CNN
+
 from sklearn.metrics import precision_score, recall_score, f1_score
 
 # -------- Settings --------
 ROOT_PATH = "data/ECSSD"
-CHECKPOINT_PATH = "checkpoints/best_model.pth"
+BATCH_SIZE = 8
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-THRESHOLD = 0.5  # threshold për binarizim
-BATCH_SIZE = 1
+# Checkpoint i ruajtur nga train.py
+CHECKPOINT_PATH = os.path.join("checkpoints", "best_model.pth")
 
-# -------- Load Data --------
-_, _, test_loader = create_dataloaders(ROOT_PATH, batch_size=BATCH_SIZE)
 
-# -------- Load Model --------
-model = SOD_CNN().to(DEVICE)
-checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
-model.load_state_dict(checkpoint["model_state_dict"])
-model.eval()
+def compute_iou(y_true, y_pred):
+    """
+    Llogarit IoU (Intersection over Union) për vlera binare (0/1).
+    """
+    y_true = y_true.astype(np.uint8)
+    y_pred = y_pred.astype(np.uint8)
 
-# -------- Prepare folders & CSV --------
-output_viz_dir = "outputs/visualizations"
-os.makedirs(output_viz_dir, exist_ok=True)
-output_plot_dir = "outputs/plots"
-os.makedirs(output_plot_dir, exist_ok=True)
-csv_path = os.path.join(output_plot_dir, "test_metrics_per_image.csv")
+    intersection = np.logical_and(y_true == 1, y_pred == 1).sum()
+    union = np.logical_or(y_true == 1, y_pred == 1).sum()
 
-# Write CSV header
-with open(csv_path, "w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(["idx", "iou", "precision", "recall", "f1"])
+    if union == 0:
+        return 0.0
 
-# -------- Metrics accumulators --------
-ious, precisions, recalls, f1s = [], [], [], []
+    return intersection / (union + 1e-7)
 
-# -------- Evaluation Loop (per-image reporting) --------
-with torch.no_grad():
-    for idx, (images, masks) in enumerate(tqdm(test_loader, desc="Evaluating")):
-        images = images.float().to(DEVICE)
-        masks = masks.float().to(DEVICE)
 
-        # Forward pass
-        outputs = model(images)
+def visualize_sample(image, mask, pred_mask, save_path=None):
+    """
+    Shfaq/shkruan një shembull: input image, ground truth mask, predicted mask, overlay.
+    image: (C, H, W) tensor
+    mask, pred_mask: (1, H, W) tensor
+    """
+    img_np = image.permute(1, 2, 0).cpu().numpy()
+    gt_np = mask.squeeze().cpu().numpy()
+    pred_np = pred_mask.squeeze().cpu().numpy()
 
-        # Ensure outputs match mask spatial size
-        if outputs.shape[2:] != masks.shape[2:]:
-            outputs = F.interpolate(outputs, size=masks.shape[2:], mode='bilinear', align_corners=False)
+    fig, axes = plt.subplots(1, 4, figsize=(12, 4))
 
-        # Binarize predictions
-        pred_mask = (outputs > THRESHOLD).float()
+    axes[0].imshow(img_np)
+    axes[0].set_title("Input Image")
+    axes[0].axis("off")
 
-        # Convert to 1D integer arrays for sklearn
-        pred_flat = (pred_mask.cpu().numpy().flatten() > 0).astype(int)
-        true_flat = (masks.cpu().numpy().flatten() > 0.5).astype(int)
+    axes[1].imshow(gt_np, cmap="gray")
+    axes[1].set_title("Ground Truth")
+    axes[1].axis("off")
 
-        # Compute IoU
-        intersection = (pred_flat * true_flat).sum()
-        union = pred_flat.sum() + true_flat.sum() - intersection + 1e-6
-        iou = float(intersection / union) if union > 0 else 1.0
-        ious.append(iou)
+    axes[2].imshow(pred_np, cmap="gray")
+    axes[2].set_title("Predicted Mask")
+    axes[2].axis("off")
 
-        # Compute precision, recall, f1 (zero_division=1 returns 1 when no positive predictions/labels)
-        precision = precision_score(true_flat, pred_flat, zero_division=1)
-        recall = recall_score(true_flat, pred_flat, zero_division=1)
-        f1 = f1_score(true_flat, pred_flat, zero_division=1)
+    # Overlay: image + predicted mask
+    axes[3].imshow(img_np, alpha=0.7)
+    axes[3].imshow(pred_np, cmap="jet", alpha=0.3)
+    axes[3].set_title("Overlay")
+    axes[3].axis("off")
 
-        precisions.append(precision)
-        recalls.append(recall)
-        f1s.append(f1)
+    plt.tight_layout()
 
-        # Append per-image metrics to CSV
-        with open(csv_path, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([idx, iou, precision, recall, f1])
+    if save_path is not None:
+        plt.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
 
-        # Print per-image metrics + running averages
-        running_iou = float(np.mean(ious))
-        running_f1 = float(np.mean(f1s))
-        print(f"[{idx+1}/{len(test_loader)}] iou={iou:.4f} prec={precision:.4f} rec={recall:.4f} f1={f1:.4f} | "
-              f"running_mean_iou={running_iou:.4f} running_mean_f1={running_f1:.4f}")
 
-        # -------- Visualization (save each) --------
-        img_np = np.transpose(images[0].cpu().numpy(), (1, 2, 0))
-        gt_np = masks[0].cpu().numpy()[0]
-        pred_np = pred_mask[0].cpu().numpy()[0]
+def main():
+    # dataLoader (test set
+    _, _, test_loader = create_dataloaders(ROOT_PATH, batch_size=BATCH_SIZE)
 
-        plt.figure(figsize=(12, 4))
-        plt.subplot(1, 4, 1)
-        plt.title("Input")
-        plt.imshow(img_np)
-        plt.axis("off")
+    # model - checkpoint
+    model = SOD_CNN().to(DEVICE)
 
-        plt.subplot(1, 4, 2)
-        plt.title("Ground Truth")
-        plt.imshow(gt_np, cmap="gray")
-        plt.axis("off")
+    if not os.path.exists(CHECKPOINT_PATH):
+        raise FileNotFoundError(f"Checkpoint file not found at {CHECKPOINT_PATH}")
 
-        plt.subplot(1, 4, 3)
-        plt.title("Predicted")
-        plt.imshow(pred_np, cmap="gray")
-        plt.axis("off")
+    state = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
+    # Nëse checkpoint-i ka key "model_state_dict"
+    if "model_state_dict" in state:
+        model.load_state_dict(state["model_state_dict"])
+    else:
+        model.load_state_dict(state)
 
-        plt.subplot(1, 4, 4)
-        plt.title("Overlay")
-        overlay = img_np * 0.6 + np.stack([pred_np]*3, axis=-1) * 0.4
-        overlay = np.clip(overlay, 0, 1)
-        plt.imshow(overlay)
-        plt.axis("off")
+    model.eval()
 
-        save_path = os.path.join(output_viz_dir, f"viz_{idx:04d}.png")
-        plt.tight_layout()
-        plt.savefig(save_path)
-        plt.close()
+    all_preds = []
+    all_targets = []
 
-        # Show only the first example in an interactive window for quick visual check
-        if idx == 0:
-            plt.figure(figsize=(12,4))
-            plt.subplot(1,4,1); plt.title("Input"); plt.imshow(img_np); plt.axis("off")
-            plt.subplot(1,4,2); plt.title("Ground Truth"); plt.imshow(gt_np, cmap="gray"); plt.axis("off")
-            plt.subplot(1,4,3); plt.title("Predicted"); plt.imshow(pred_np, cmap="gray"); plt.axis("off")
-            plt.subplot(1,4,4); plt.title("Overlay"); plt.imshow(overlay); plt.axis("off")
-            plt.show()
+    
+    with torch.no_grad():
+        for images, masks in test_loader:
+            images = images.to(DEVICE)
+            masks = masks.to(DEVICE)
 
-# -------- Final summary & bar plot --------
-mean_iou = float(np.mean(ious)) if len(ious) > 0 else 0.0
-mean_prec = float(np.mean(precisions)) if len(precisions) > 0 else 0.0
-mean_rec = float(np.mean(recalls)) if len(recalls) > 0 else 0.0
-mean_f1 = float(np.mean(f1s)) if len(f1s) > 0 else 0.0
+            outputs = model(images)       
+            preds = (outputs > 0.5).float()  
 
-print("\n--- Final Test Summary ---")
-print(f"Mean IoU: {mean_iou:.4f}")
-print(f"Mean Precision: {mean_prec:.4f}")
-print(f"Mean Recall: {mean_rec:.4f}")
-print(f"Mean F1-Score: {mean_f1:.4f}")
+            all_preds.append(preds.view(-1).cpu().numpy())
+            all_targets.append(masks.view(-1).cpu().numpy())
 
-metrics = {"IoU": mean_iou, "Precision": mean_prec, "Recall": mean_rec, "F1-Score": mean_f1}
-plt.figure(figsize=(8,5))
-bars = plt.bar(metrics.keys(), metrics.values(), color=["skyblue", "lightgreen", "salmon", "orange"])
-plt.ylim(0, 1)
-for i, v in enumerate(metrics.values()):
-    plt.text(i, v + 0.02, f"{v:.2f}", ha="center", fontweight="bold")
-plt.title("Test Set Metrics")
-plt.savefig(os.path.join(output_plot_dir, "test_metrics_barplot.png"))
-plt.close()
+    all_preds = np.concatenate(all_preds, axis=0)
+    all_targets = np.concatenate(all_targets, axis=0)
 
-print(f"Saved per-image CSV at: {csv_path}")
-print(f"Saved visualizations in: {output_viz_dir}")
-print(f"Saved barplot at: {os.path.join(output_plot_dir, 'test_metrics_barplot.png')}")
+    
+    precision = precision_score(all_targets, all_preds, zero_division=0)
+    recall = recall_score(all_targets, all_preds, zero_division=0)
+    f1 = f1_score(all_targets, all_preds, zero_division=0)
+    iou = compute_iou(all_targets, all_preds)
+
+    print("testingmetrics")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall:    {recall:.4f}")
+    print(f"F1-score:  {f1:.4f}")
+    print(f"IoU:       {iou:.4f}")
+
+    
+    os.makedirs("results", exist_ok=True)
+
+    max_examples = 20   
+    count = 0
+
+    with torch.no_grad():
+        for images, masks in test_loader:
+            images = images.to(DEVICE)
+            masks = masks.to(DEVICE)
+
+            outputs = model(images)
+            preds = (outputs > 0.5).float()
+
+            batch_size = images.size(0)
+
+            for i in range(batch_size):
+                save_path = os.path.join("results", f"example_{count + 1}.png")
+                visualize_sample(
+                    images[i].cpu(),
+                    masks[i].cpu(),
+                    preds[i].cpu(),
+                    save_path=save_path,
+                )
+                print(f"Saved visualization: {save_path}")
+                count += 1
+
+                if count >= max_examples:
+                    break
+
+            if count >= max_examples:
+                break
+
+
+if __name__ == "__main__":
+    main()
