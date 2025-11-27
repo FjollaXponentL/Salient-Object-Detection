@@ -3,21 +3,32 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Virtual env
+# Virtual environments
+venv/
+venv_gpu/
 .venv/
+env/
+ENV/
 
-# Data (mos e ngarko ECSSD në GitHub)
+# Dataset (nuk duhet ngarkuar)
 data/ECSSD/
 
-# Output directories
+# Checkpoints and outputs
 checkpoints/
 outputs/
+results/
+runs/
 
-# IDE/editor
+# Logs
+*.log
+
+# VSCode / PyCharm
 .vscode/
 .idea/
 
-# Misc
-*.log
+# Images & generated artifacts
+*.png
+*.jpg
 
-runs/
+# Misc
+.DS_Store

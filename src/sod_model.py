@@ -2,94 +2,95 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
 
 class SOD_CNN(nn.Module):
     def __init__(self):
-        super(SOD_CNN, self).__init__()
+        super().__init__()
 
-        # ---- Encoder ----
+        # Encoder
         self.enc1 = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.Conv2d(3, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2)  # 128 -> 64
+            nn.MaxPool2d(2)  
         )
-
         self.enc2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2)  # 64 -> 32
+            nn.MaxPool2d(2)  
         )
-
         self.enc3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.MaxPool2d(2) 
+        )
+        self.enc4 = nn.Sequential(
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.MaxPool2d(2)  # 32 -> 16
+            nn.MaxPool2d(2) 
         )
 
-        # ---- Decoder ----
-        self.dec3 = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),  # 16 -> 32
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+        # Decoder-skip connection
+        self.dec1 = nn.ConvTranspose2d(256, 128, 2, stride=2)  
+        self.conv_dec1 = nn.Sequential(
+            nn.Conv2d(128 + 128, 128, 3, padding=1),
             nn.ReLU()
         )
 
-        self.dec2 = nn.Sequential(
-            nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2),  # 32 -> 64
-            nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+        self.dec2 = nn.ConvTranspose2d(128, 64, 2, stride=2)  
+        self.conv_dec2 = nn.Sequential(
+            nn.Conv2d(64 + 64, 64, 3, padding=1),
             nn.ReLU()
         )
 
-        self.dec1 = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2),  # 64 -> 128
-            nn.ReLU(),
-            nn.Conv2d(16, 16, kernel_size=3, padding=1),
+        self.dec3 = nn.ConvTranspose2d(64, 32, 2, stride=2)   
+        self.conv_dec3 = nn.Sequential(
+            nn.Conv2d(32 + 32, 32, 3, padding=1),
             nn.ReLU()
         )
 
-        self.out_conv = nn.Conv2d(16, 1, kernel_size=1)
+        self.dec4 = nn.ConvTranspose2d(32, 16, 2, stride=2)    
+        self.out = nn.Conv2d(16, 1, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         # Encoder
-        e1 = self.enc1(x)
-        e2 = self.enc2(e1)
-        e3 = self.enc3(e2)
+        c1 = self.enc1(x)
+        c2 = self.enc2(c1)
+        c3 = self.enc3(c2)
+        c4 = self.enc4(c3)
 
-        # Decoder
-        d3 = self.dec3(e3)
-        d2 = self.dec2(d3)
-        d1 = self.dec1(d2)
-        out = self.out_conv(d1)
-        out = self.sigmoid(out)
+        # Decoder + skip connections
+        x = self.dec1(c4)
+        x = torch.cat([x, c3], dim=1)
+        x = self.conv_dec1(x)
 
-        return out
+        x = self.dec2(x)
+        x = torch.cat([x, c2], dim=1)
+        x = self.conv_dec2(x)
+
+        x = self.dec3(x)
+        x = torch.cat([x, c1], dim=1)
+        x = self.conv_dec3(x)
+
+        x = self.dec4(x)
+        x = self.out(x)
+
+        return self.sigmoid(x)
 
 
-# ---- Loss function: BCE + 0.5*(1 - IoU) ----
 def bce_iou_loss(pred, target):
+    """Binary Cross Entropy + 0.5 * (1 - IoU)"""
     bce = nn.BCELoss()(pred, target)
 
-    # Compute IoU
     smooth = 1e-6
     intersection = (pred * target).sum()
     union = pred.sum() + target.sum() - intersection
     iou = (intersection + smooth) / (union + smooth)
-    loss = bce + 0.5 * (1 - iou)
+
+    loss = bce + 0.5 * (1.0 - iou)
     return loss
-
-
-# ---- Sanity check ----
-if __name__ == "__main__":
-    model = SOD_CNN()
-    x = torch.randn(2, 3, 128, 128)  # batch_size=2
-    y = model(x)
-    print("Output shape:", y.shape)  # duhet të jetë (2,1,128,128)
